@@ -1,0 +1,13 @@
+name: Embed_it
+title: Embed_it
+username:
+account: jukaje
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 9595690
+bundleId: 8176166
+url: https://jukaje.shinyapps.io/Embed_it/
+when: 1706039233.37902
+lastSyncTime: 1706039233.37902
+asMultiple: FALSE
+asStatic: FALSE

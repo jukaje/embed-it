@@ -1,0 +1,694 @@
+---
+title: "MDS comparisons"
+output: pdf_document
+---
+
+Comparison on various data sets
+
+data: 
+- ABR curves, frequency 100, SPL 70, Genes (everything fixed strong curves)
+- ABR curves, frequency 30000, SPL 55, Genes (everything fixed weak curves)
+- ABR curves, frequency 12000, SPL 50 - 80 (freq fixed)
+- ABR curves, SPL 70 (SPL fixed)
+- ABR curves, frequency 12 000 - 30000 SPL 70 (SPL fixed, no freq 100/6000)
+- ABR curves, frequency 12000 - 30000, SPL 50 - 80 (similar curves)
+- ABR curves (nothing fixed)
+- ABR curves with 5% outliers
+
+
+prep
+```{r}
+library(ggplot2)
+library(dplyr)
+library(umap)
+library(tidyverse)
+library(data.table)
+library(tidyfun)
+library(checkmate)
+library(Rtsne)
+
+source(here::here("Apps/Embed_it/R/utils.R"))
+
+set.seed(42)
+
+```
+
+
+data preparation
+
+```{r}
+prep_curves_comp <- function(curves, mouse_data, freq = c(100, 6000, 12000, 18000, 24000, 30000), SPL = c(10:90), saveit = FALSE, filename = "test") {
+  
+  mouse_ids <- mouse_data %>% .["mouse_id"]
+  curves_temp <- curves[which(curves$mouse_id %in% as.integer(mouse_ids$mouse_id)), ]
+  curves_info <- curves_temp %>% filter(frequency %in% freq & sound_level %in% SPL)
+
+  # the same mouse appears multiple times in mouse_data, because it is found in various cohorts
+  labels <- mouse_data %>% filter(mouse_id %in% curves_info$mouse_id) #%>% .$cohort_type
+  labels <- labels[!duplicated(labels$mouse_id), ] # delete duplicated ids
+  labels <- cbind("mouse_id" = labels$mouse_id, "label" = labels$gene_symbol)
+  
+  functs <- curves_info[ , 1:666]
+  functs <- functs[ , -c(4:24)]
+  functs_tf <- functs
+  
+  functs_tf <- functs_tf %>% janitor::clean_names() %>% tf_gather(key = "tf_fun", starts_with("t"))
+  
+  # combine to dataframe without embeddings
+  functs_df_new <- merge(functs_tf, as.data.frame(labels), by = "mouse_id")
+  functs_df_new[is.na(functs_df_new)] <- "wild_type"
+
+  functs_df_new
+    
+}
+```
+
+
+```{r}
+# ABR curves, frequency 100, SPL 70, Genes (everything fixed strong curves)
+mice_100_70 <- prep_curves_comp(curves20000, mouse_data, freq = 100, SPL = 70)
+# 216 obs (would be 130 obs. no wildtype)
+
+# ABR curves, frequency 30000, SPL 45 (everything fixed weak curves)
+mice_30000_55 <- prep_curves_comp(curves20000, mouse_data, freq = 30000, SPL = 55)
+# 118 obs
+
+# ABR curves, frequency 12000, SPL 50 - 80 (freq fixed
+
+mice_12000_50to80 <- prep_curves_comp(curves20000, mouse_data, freq = 12000, SPL = c(50:80))
+# 1082 obs
+
+# ABR curves, SPL 70 (SPL fixed)
+mice_70 <- prep_curves_comp(curves20000, mouse_data, SPL = 70)
+# 1231 obs
+
+# ABR curves, frequency 12 000 - 30000 SPL 70 (SPL fixed, no freq 100/6000)
+mice_12000to30000_70 <- prep_curves_comp(curves20000, mouse_data, freq = c(12000, 18000, 24000, 30000), SPL = 70)
+# 798 obs
+
+# ABR curves, frequency 12000 - 30000, SPL 50 - 80 (similar curves)
+mice_12000to30000_50to80 <- prep_curves_comp(curves20000, mouse_data, freq = c(12000, 18000, 24000, 30000), SPL = c(50:80))
+# 4159 obs
+
+# ABR curves (nothing fixed)
+mice_all <- prep_curves_comp(curves20000, mouse_data)
+# 11311 obs
+
+# ABR curves with 5% outliers (different freq)
+mice_outl <- prep_curves_comp(curves20000, mouse_data, freq = 100, SPL = 70)
+mice_outl_5 <- prep_curves_comp(curves20000, mouse_data, freq = 12000, SPL = 70)[1:(nrow(prep_curves_comp(curves20000, mouse_data, freq = 12000, SPL = 70)) * 0.05), ]
+
+mice_outl <- rbind(mice_outl_5, mice_outl)
+
+# combine
+datasets_mice <- list("mice_100_70" = mice_100_70, "mice_30000_55" = mice_30000_55,"mice_12000_50to80" = mice_12000_50to80, "mice_70" = mice_70, "mice_12000to30000_70" = mice_12000to30000_70, "mice_12000to30000_50to80" = mice_12000to30000_50to80, "mice_all" = mice_all, "mice_outl" = mice_outl)
+
+```
+
+
+get the embeddings with different hyperparameter settings 2D
+
+```{r}
+# default settings
+
+set.seed(42)
+tsne_default <- map(datasets_mice_sm, function(x){ #datasets_mice_sm
+  embedding_tsne <- Rtsne(as.matrix(tf_spread(as.data.frame(x$tf_fun))), dims = 2)
+  colnames(embedding_tsne$Y) <- paste0("tsne_default_", 1:ncol(embedding_tsne$Y))
+  
+  # add the labels
+  embedding_tsne <- c(embedding_tsne, var = list(x$label))
+  
+  embedding_tsne
+})
+
+```
+
+build datasets for the app
+
+```{r}
+
+# combine the embeddings with the dataset
+datasets_mice_app <- datasets_mice
+tsne_temp <- tsne_default
+
+datasets_mice_app <- map2(datasets_mice_app, tsne_temp, ~ cbind(.x, .y$Y))
+
+# build app input
+datasets_mice_app_input <- map(datasets_mice_app, buildInput, embs_cols = c("tsne_default_1", "tsne_default_2"), vars_cols = c(1,2,3,5), vars_cat_cols = c(1,2,3,5), tf_col = 4, id_col = NULL,
+                       img = FALSE, url_col = NULL)
+
+```
+
+Add more embeddings
+
+skip PCA step
+```{r}
+set.seed(42)
+tsne_noPCA <- map(datasets_mice_sm, function(x){
+  embedding_tsne <- Rtsne(as.matrix(tf_spread(as.data.frame(x$tf_fun))), dims = 2, pca = FALSE)
+  
+  colnames(embedding_tsne$Y) <- paste0("tsne_noPCA_", 1:ncol(embedding_tsne$Y))
+  
+  embedding_tsne
+})
+
+datasets_mice_app <- map2(datasets_mice_app, tsne_noPCA, ~ cbind(.x, .y$Y))
+
+```
+
+vary perplexity
+
+```{r}
+set.seed(42)
+tsne_perp10 <- map(datasets_mice_sm, function(x){
+  embedding_tsne <- Rtsne(as.matrix(tf_spread(as.data.frame(x$tf_fun))), dims = 2, perplexity = 10)
+  
+  colnames(embedding_tsne$Y) <- paste0("tsne_perp10_", 1:ncol(embedding_tsne$Y))
+  
+  embedding_tsne
+})
+
+datasets_mice_app <- map2(datasets_mice_app, tsne_perp10, ~ cbind(.x, .y$Y))
+
+```
+
+# this seems to work really well for freq, especially in mice_70
+# although, now that I'm comparing it, not that much of a difference
+
+
+no Barnes-Hut
+
+```{r}
+
+set.seed(42)
+tsne_noBH <- map(datasets_mice_sm, function(x){
+  embedding_tsne <- Rtsne(as.matrix(tf_spread(as.data.frame(x$tf_fun))), dims = 2, theta = 0.0)
+  
+  colnames(embedding_tsne$Y) <- paste0("tsne_noBH_", 1:ncol(embedding_tsne$Y))
+  
+  
+  embedding_tsne
+})
+
+datasets_mice_app <- map2(datasets_mice_app, tsne_noBH, ~ cbind(.x, .y$Y))
+```
+
+
+final step
+```{r}
+# build app input
+datasets_mice_app_input <- map(datasets_mice_app, buildInput, embs_cols = c("tsne_default_1", "tsne_default_2", "tsne_noBH_1", "tsne_noBH_2", "tsne_perp10_1", "tsne_perp10_2", "tsne_noPCA_1", "tsne_noPCA_2"), vars_cols = c(1,2,3,5), vars_cat_cols = c(1,2,3,5), tf_col = 4, id_col = NULL,
+                       img = FALSE, url_col = NULL)
+
+```
+
+---------------------------------
+reduce the size of the curves
+
+```{r}
+# get every fifth value
+fifth <-function(x) subset(x, x %% 5 == 0)
+
+
+get_fifths <- function(x) {
+ # browser()
+  curve <- tf_spread(x[ , "tf_fun", drop = FALSE])
+  #curve <- curve[ , 14:ncol(curve)]
+  columns5 <- fifth(1:ncol(curve))
+  curve <- curve[ , columns5]
+  curve <- tf_gather(curve)
+  x$tf_fun <- curve$tf_fun
+  x
+}
+```
+
+```{r}
+datasets_mice_app_input1 <- map(datasets_mice_app_input, get_fifths)
+
+```
+
+t-SNE 3D
+
+```{r}
+start_time <- Sys.time()
+set.seed(42)
+tsne_default_3D <- map(datasets_mice_app_input, function(x){
+  embedding_tsne <- Rtsne(as.matrix(tf_spread(as.data.frame(x$tf_fun))), dims = 3)
+  
+  colnames(embedding_tsne$Y) <- paste0("embs_tsne_default3D_", 1:ncol(embedding_tsne$Y))
+  
+  
+  embedding_tsne
+})
+
+#  datasets_mice_app <- map2(datasets_mice_app, tsne_noBH, ~ cbind(.x, .y$Y))
+datasets_mice_app_input1 <- map2(datasets_mice_app_input1, tsne_default_3D, ~ cbind(.x, .y$Y))
+
+end_time <- Sys.time()
+end_time - start_time
+
+
+```
+3.44 minutes
+3.52
+3.53
+
+
+Umap
+
+```{r}
+start_time <- Sys.time()
+set.seed(42)
+umap_default <- map(datasets_mice_app_input, function(x){
+  
+  custom.umap <- umap.defaults
+  custom.umap$verbose <- TRUE
+  custom.umap$input <- "data"
+  
+  embedding_umap <- umap(as.matrix(tf_spread(as.data.frame(x$tf_fun))), config = custom.umap)#
+  colnames(embedding_umap$layout) <- paste0("embs_umap_default_", 1:ncol(embedding_umap$layout))
+  
+  embedding_umap
+})
+
+#  datasets_mice_app <- map2(datasets_mice_app, tsne_noBH, ~ cbind(.x, .y$Y))
+datasets_mice_app_input1 <- map2(datasets_mice_app_input1, umap_default, ~ cbind(.x, .y$layout))
+
+end_time <- Sys.time()
+end_time - start_time
+
+```
+
+2.35 minutes
+2.31
+
+umap n_neighbors = 3
+```{r}
+start_time <- Sys.time()
+set.seed(42)
+umap_k3 <- map(datasets_mice_app_input, function(x){
+  
+  custom.umap <- umap.defaults
+  custom.umap$verbose <- TRUE
+  custom.umap$input <- "data"
+  custom.umap$n_neighbors <- 3
+  
+  embedding_umap <- umap(as.matrix(tf_spread(as.data.frame(x$tf_fun))), config = custom.umap)#
+  colnames(embedding_umap$layout) <- paste0("embs_umap_k3_", 1:ncol(embedding_umap$layout))
+  
+  embedding_umap
+})
+
+#  datasets_mice_app <- map2(datasets_mice_app, tsne_noBH, ~ cbind(.x, .y$Y))
+datasets_mice_app_input1 <- map2(datasets_mice_app_input1, umap_k3, ~ cbind(.x, .y$layout))
+
+end_time <- Sys.time()
+end_time - start_time
+```
+
+48 seconds
+
+
+umap n_neighbors = 50
+```{r}
+start_time <- Sys.time()
+set.seed(42)
+umap_k50 <- map(datasets_mice_app_input, function(x){
+  
+  custom.umap <- umap.defaults
+  custom.umap$verbose <- TRUE
+  custom.umap$input <- "data"
+  custom.umap$n_neighbors <- 50
+  
+  embedding_umap <- umap(as.matrix(tf_spread(as.data.frame(x$tf_fun))), config = custom.umap)#
+  colnames(embedding_umap$layout) <- paste0("embs_umap_k50_", 1:ncol(embedding_umap$layout))
+  
+  embedding_umap
+})
+
+#  datasets_mice_app <- map2(datasets_mice_app, tsne_noBH, ~ cbind(.x, .y$Y))
+datasets_mice_app_input1 <- map2(datasets_mice_app_input1, umap_k50, ~ cbind(.x, .y$layout))
+
+end_time <- Sys.time()
+end_time - start_time
+```
+
+6.57 minutes
+
+
+umap random initialization
+```{r}
+start_time <- Sys.time()
+set.seed(42)
+umap_rand <- map(datasets_mice_app_input, function(x){
+  
+  custom.umap <- umap.defaults
+  custom.umap$verbose <- TRUE
+  custom.umap$input <- "data"
+  custom.umap$init <- "random"
+  
+  embedding_umap <- umap(as.matrix(tf_spread(as.data.frame(x$tf_fun))), config = custom.umap)#
+  colnames(embedding_umap$layout) <- paste0("embs_umap-randinit_", 1:ncol(embedding_umap$layout))
+  
+  embedding_umap
+})
+
+#  datasets_mice_app <- map2(datasets_mice_app, tsne_noBH, ~ cbind(.x, .y$Y))
+datasets_mice_app_input1 <- map2(datasets_mice_app_input1, umap_rand, ~ cbind(.x, .y$layout))
+
+end_time <- Sys.time()
+end_time - start_time
+```
+~ 3 minutes
+
+umap min_dist = 0.9
+```{r}
+start_time <- Sys.time()
+set.seed(42)
+umap_mindist90 <- map(datasets_mice_app_input, function(x){
+  
+  custom.umap <- umap.defaults
+  custom.umap$verbose <- TRUE
+  custom.umap$input <- "data"
+  custom.umap$min_dist <- 0.9
+  
+  embedding_umap <- umap(as.matrix(tf_spread(as.data.frame(x$tf_fun))), config = custom.umap)#
+  colnames(embedding_umap$layout) <- paste0("embs_umap-mindist0.9_", 1:ncol(embedding_umap$layout))
+  
+  embedding_umap
+})
+
+#  datasets_mice_app <- map2(datasets_mice_app, tsne_noBH, ~ cbind(.x, .y$Y))
+datasets_mice_app_input1 <- map2(datasets_mice_app_input1, umap_mindist90, ~ cbind(.x, .y$layout))
+
+end_time <- Sys.time()
+end_time - start_time
+```
+2.36 minutes
+
+umap5 dimensions
+```{r}
+start_time <- Sys.time()
+set.seed(42)
+umap_5D <- map(datasets_mice_app_input, function(x){
+  
+  custom.umap <- umap.defaults
+  custom.umap$verbose <- TRUE
+  custom.umap$input <- "data"
+  custom.umap$n_components <- 5
+  
+  embedding_umap <- umap(as.matrix(tf_spread(as.data.frame(x$tf_fun))), config = custom.umap)#
+  colnames(embedding_umap$layout) <- paste0("embs_umap5D_", 1:ncol(embedding_umap$layout))
+  
+  embedding_umap
+})
+
+#  datasets_mice_app <- map2(datasets_mice_app, tsne_noBH, ~ cbind(.x, .y$Y))
+datasets_mice_app_input1 <- map2(datasets_mice_app_input1, umap_5D, ~ cbind(.x, .y$layout))
+
+end_time <- Sys.time()
+end_time - start_time
+```
+2.48 minutes
+
+------------------------------------------------------------------------------
+MDS
+
+distance matrix
+
+```{r}
+# get the dist matrix (L2) for all datasets
+
+dist_curve <- function(curve) {
+  dist(tf_spread(as.data.frame(curve$tf_fun)))
+}
+
+dists <- map(datasets_mice_app_input, dist_curve)
+```
+
+plot function
+```{r}
+plot_gofs <- function(gofs, meth = "GOF", name = "Plot") {
+ # browser()
+  ggplot(as.data.frame(gofs)) + geom_point(aes(x = 1:length(gofs), y = gofs)) +
+    theme_minimal() +
+    xlab("number of dimensions") + ylab(meth) +
+    ggtitle(name) +
+    theme(plot.title = element_text(size = 9)) +
+    if (meth == "GOF") geom_hline(yintercept = c(0.5, 0.75), size = 0.5, alpha = 0.5) #+
+   #if (meth == "GOF") geom_hline(yintercept = 0.8, linetype = "dashed", color = "red")
+    
+}
+```
+
+
+cmdscale
+```{r}
+set.seed(42)
+# get the MDS GOF for 1 - n-1 dims
+getgof <- function(curve_dist) {
+  
+  message("new dataset")
+  ndim <- attr(curve_dist, "Size")
+  k = 9 #ndim - 1
+
+  gofs <- numeric()
+  for (dim in seq_len(k)) { 
+    message(dim)
+  gofs[length(gofs) + 1] <- cmdscale(as.matrix(curve_dist), k = dim, list. = TRUE)$GOF[[1]]
+  }
+  gofs
+}
+
+gofs_list <- map(dists[-7], getgof)
+
+# plot the GOF per number of dimensions
+map2(gofs_list, names(gofs_list), ~plot_gofs(gofs = .x, meth = "GOF", name = .y))
+
+# at what number of dimension does the GOF surpass 0.8?
+unlist(map(gofs_list, function(x) min(which(x > 0.8)))) # 5,8,6,6,6,7, - , 5
+
+```
+
+```{r}
+gofs_all <- map(dists[7], getgof)
+```
+
+-------------------------------
+
+MDS 5 dimensions
+```{r}
+
+start_time <- Sys.time()
+set.seed(42)
+MDS_5D <- map(dists[-7], function(x){
+  
+  message("new dataset")
+  embedding_MDS <- cmdscale(x, k = 5, list. = TRUE)
+  colnames(embedding_MDS$points) <- paste0("embs_MDS5D_", 1:ncol(embedding_MDS$points))
+  
+  embedding_MDS
+})
+
+# 
+ datasets_mice_app_input1 <- map2(datasets_mice_app_input1, MDS_5D, ~ cbind(.x, .y$points))
+# 
+
+end_time <- Sys.time()
+end_time - start_time
+```
+1.83 minutes (w/o number 7)
+
+calculate LOF-scores on the MDS5D
+
+```{r}
+
+start_time <- Sys.time()
+set.seed(42)
+MDS_5D_lof <- map(datasets_mice_app_input2_sm, function(x){
+  
+  message("new dataset")
+  lof_scores <- lof(x[ ,c("embs_MDS5D_1", "embs_MDS5D_2", "embs_MDS5D_3", "embs_MDS5D_4", "embs_MDS5D_5")])
+
+  lof_scores
+})
+
+datasets_mice_app_input2_sm <- map2(datasets_mice_app_input2_sm, MDS_5D_lof, ~ cbind(.x, "vars_MDS_LOF" = .y))
+
+end_time <- Sys.time()
+end_time - start_time
+
+
+```
+0.65 seconds
+0.33
+
+calculate LOF-scores on the UMAP 5D
+
+```{r}
+
+start_time <- Sys.time()
+set.seed(42)
+umap_5D_lof <- map(datasets_mice_app_input2_sm, function(x){
+  
+  #browser()
+  message("new dataset")
+  lof_scores <- lof(x[ ,c("embs_umap5D_1", "embs_umap5D_2", "embs_umap5D_3", "embs_umap5D_4", "embs_umap5D_5")])
+
+  lof_scores
+})
+
+datasets_mice_app_input2_sm <- map2(datasets_mice_app_input2_sm, umap_5D_lof, ~ cbind(.x, "vars_UMAP_LOF" = .y))
+
+end_time <- Sys.time()
+end_time - start_time
+
+
+```
+
+
+dataset without mice_all
+
+```{r}
+datasets_mice_app_input2 <- datasets_mice_app_input[-7]
+datasets_mice_app_input2_sm <- datasets_mice_app_input1[-7]
+```
+
+sammon
+```{r}
+# get the dist matrix (L2) for all datasets
+
+dists7 <- dists
+dists7$mice_all <- NULL
+```
+
+```{r}
+
+getstress_sam <- function(curve_dist) {
+
+  ndim <- attr(curve_dist, "Size")
+  k = 15
+
+  stresses <- numeric()
+  for (dim in seq_len(k)) { #ndim - 1
+    message(dim)
+  stresses[length(stresses) + 1] <- MASS::sammon(curve_dist, k = dim, trace = FALSE)$stress
+  }
+  stresses
+}
+
+stress_list <- map(dists7, getstress_sam)
+
+save(stress_list, file = paste0(here::here(), "/stress_sammon.rds"))
+
+# scree plots
+#map(stress_list, plot_gofs, meth = "stress")
+map2(stress_list, names(stress_list), ~plot_gofs(gofs = .x, meth = "stress", name = .y))
+
+
+```
+```{r}
+
+start_time <- Sys.time()
+set.seed(42)
+MDS_5D_sammon <- map(dists7, function(x){
+  
+  message("new dataset")
+  embedding_MDS <- MASS::sammon(x, k = 5, trace = FALSE)
+  colnames(embedding_MDS$points) <- paste0("embs_MDS5D_sammon_", 1:ncol(embedding_MDS$points))
+  
+  embedding_MDS
+})
+
+
+datasets_mice_app_input2_sm <- map2(datasets_mice_app_input2_sm, MDS_5D_sammon, ~ cbind(.x, .y$points))
+
+
+end_time <- Sys.time()
+end_time - start_time
+
+
+```
+1.9 minutes
+
+classic L1
+
+distance matrix
+
+```{r}
+# get the dist matrix (L2) for all datasets
+
+dist_curve_L1 <- function(curve) {
+  dist(tf_spread(as.data.frame(curve$tf_fun)), method = "minkowski", p = 1)
+}
+
+dists_L1 <- map(datasets_mice_app_input2, dist_curve_L1)
+```
+
+
+```{r}
+
+start_time <- Sys.time()
+set.seed(42)
+MDS_5D_L1 <- map(dists_L1, function(x){
+  
+  message("new dataset")
+  embedding_MDS <- cmdscale(x, k = 5, list. = TRUE)
+  colnames(embedding_MDS$points) <- paste0("embs_MDS5D_L1_", 1:ncol(embedding_MDS$points))
+  
+  embedding_MDS
+})
+
+
+datasets_mice_app_input2_sm <- map2(datasets_mice_app_input2_sm, MDS_5D_L1, ~ cbind(.x, .y$points))
+
+
+end_time <- Sys.time()
+end_time - start_time
+
+
+```
+2.01 minutes
+1.96
+
+
+classic canberra
+
+distance matrix
+
+```{r}
+# get the dist matrix (L2) for all datasets
+
+dist_curve_canb <- function(curve) {
+  message("new dist")
+  dist(tf_spread(as.data.frame(curve$tf_fun)), method = "canberra")
+}
+
+dists_canb <- map(datasets_mice_app_input2, dist_curve_L1)
+```
+
+```{r}
+
+start_time <- Sys.time()
+set.seed(42)
+MDS_5D_canb <- map(dists_canb, function(x){
+  
+  message("new dataset")
+  embedding_MDS <- cmdscale(x, k = 5, list. = TRUE)
+  colnames(embedding_MDS$points) <- paste0("embs_MDS5D_canb_", 1:ncol(embedding_MDS$points))
+  
+  embedding_MDS
+})
+
+
+datasets_mice_app_input2_sm <- map2(datasets_mice_app_input2_sm, MDS_5D_canb, ~ cbind(.x, .y$points))
+
+
+end_time <- Sys.time()
+end_time - start_time
+
+```
+1.99 minutes
+1.93
+
