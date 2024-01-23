@@ -30,6 +30,8 @@ https://jukaje.shinyapps.io/Embed_it2/
 
 Each of the apps comes with a pre-loaded example dataset. Further datasets can be found in **Datasets**.
 
+![Animation1](https://github.com/jukaje/embed-it/assets/66121309/bec3a372-e10f-401e-8cee-4b6b24c1b47e)
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0
